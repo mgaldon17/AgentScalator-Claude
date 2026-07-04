@@ -2,12 +2,14 @@
 
 You are an automation agent for enterprise support tasks. You run on Claude Code: the
 loop, the reasoning and the vision are yours natively. The only real code in this repo
-is `src/agentmem/` (a lesson memory over Qdrant, exposed as the `memory` MCP server)
-plus two hooks (auto-inject lessons, apply guardrails). Everything else — the flow
-below — is these instructions.
+is `src/agentmem/` (a lesson memory over Qdrant/Azure AI Search + a document RAG, exposed
+as the `memory` MCP server) plus two hooks (auto-inject lessons, apply guardrails).
+Everything else — the flow below — is these instructions.
 
-Tools available: the `memory` MCP server (`lesson_*`), the Playwright browser (`pw`),
-Desktop Commander (`dc`) for local terminal/filesystem, and a `verifier` subagent.
+Tools available: the `memory` MCP server — lessons (`lesson_*`) and the document RAG
+(`rag_search` / `rag_ingest`) — the Playwright browser (`pw`), Desktop Commander (`dc`)
+for local terminal/filesystem, and a `verifier` subagent. Storage backend (lessons + RAG)
+and the infer LLM are config switches; see Setup.
 
 ---
 
@@ -112,8 +114,10 @@ a URL).
   overrides the built-in defaults (point elsewhere with `AGENTMEM_CONFIG`). **Secrets (API
   keys) live only in a gitignored `.env`** (loaded first, `AGENTMEM_DOTENV` to relocate):
   `ANTHROPIC_API_KEY` (for `llm.backend: claude`) or `LLM_API_KEY` (for `llm.backend:
-  local`). The lesson embedder runs **locally in-process** (sentence-transformers,
-  multilingual MiniLM, 384-dim) — no API key, offline after the model downloads once.
+  local`). The lesson embedder defaults to **Azure OpenAI** (`text-embedding-3-small`,
+  1536-dim, **keyless**) so lessons share the docs' vector space — use the SAME model for
+  the docs vectorizer. For a fully offline stack set `embedder.provider: huggingface`
+  (MiniLM, 384-dim) + `rag.backend: qdrant`.
 - **Two switches** decide where things run (everything else is coherent with them):
   - `llm.backend` — who performs the ALWAYS-ON lesson infer/rewrite (infer is *not*
     configurable). `claude` → the Anthropic API (mem0 provider `anthropic`, key from
@@ -127,4 +131,10 @@ a URL).
     `DefaultAzureCredential`): lessons written directly by mem0 to
     `azure_search.lessons_index`; documents loaded by a human via the Azure Portal from a
     blob into `azure_search.docs_index`. Set `azure_search.service` (the search service
-    name) for this backend.
+    name) for this backend. **Default is `ai_search`**: lessons are embedded with Azure
+    OpenAI and upserted directly (already vectorized) to `azure_search.lessons_index` — no
+    blob, no indexer.
+- **Lesson .md mirror** (`lessons.md_dir`, `src/agentmem/mdsink.py`): when set, every lesson
+  write also renders `<id>.md` (YAML frontmatter + procedure) into that project directory —
+  a human-readable, versionable copy alongside the vector store. Additive and best-effort;
+  wired in `mcp_server` (`_mirror` / `_mirror_delete`).

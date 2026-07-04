@@ -66,7 +66,7 @@ flowchart TB
 
     subgraph mem ["🗄️ agentmem (the only real code)"]
         STORE["Mem0LessonStore"]
-        EMB["Local embedder<br/>multilingual MiniLM · 384d"]
+        EMB["Azure OpenAI embedder<br/>text-embedding-3-small · 1536d"]
         QDR[("Qdrant<br/>vector DB")]
     end
 
@@ -217,10 +217,11 @@ docker compose up -d                                # 4. start Qdrant on :6333 (
 # 5. open the repo in Claude Code — the `memory` MCP server + hooks load automatically
 ```
 
-The embedder runs **locally, in-process** (sentence-transformers, multilingual MiniLM) —
-no API key, fully offline after the one-time model download. Two config switches
-(`config.yaml`) pick the rest: `llm.backend` (`claude` | `local`) and `rag.backend`
-(`qdrant` | `ai_search`).
+By default the embedder is **Azure OpenAI** (`text-embedding-3-small`, 1536d, **keyless**),
+so lessons share the same vector space as the docs in Azure AI Search — set the SAME model
+in the docs portal wizard. Two config switches (`config.yaml`) pick the rest: `llm.backend`
+(`claude` | `local`) and `rag.backend` (`ai_search` | `qdrant`). For a fully offline stack,
+set `embedder.provider: huggingface` (MiniLM, 384d) + `rag.backend: qdrant`.
 
 ### MCP servers
 
@@ -281,12 +282,13 @@ key. Copy `.env.example` ⟶ `.env` and fill in what your switches need (relocat
 | `memory.qdrant_port` | `QDRANT_PORT` | `6333` | Qdrant port. |
 | `memory.collection` | `MEM_COLLECTION` | `agentcore_lessons` | Qdrant collection holding the lessons. |
 | `memory.mem_user` | `MEM_USER` | `agentcore` | mem0 identity namespace shared by all lessons. |
-| `embedder.provider` | `EMBEDDER_PROVIDER` | `huggingface` | Embedder backend: `huggingface`/`fastembed` (local), or `openai`/`lmstudio`/`ollama` (remote). |
-| `embedder.model` | `EMBEDDER_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | Embedding model name. |
-| `embedder.base_url` | `EMBEDDER_BASE_URL` | `""` | Endpoint for remote embedder providers only. |
-| `embedder.api_key` | `EMBEDDER_API_KEY` | `${EMBEDDER_API_KEY}` → `.env` | Key for OpenAI-compatible embedders; empty for local. |
-| `embedder.dims` | `EMBEDDER_DIMS` | `384` | Vector dimension — **must** match the model (changing it needs a fresh collection). |
-| `embedder.check_reachable` | `EMBEDDER_CHECK_REACHABLE` | `true` | Preflight a remote embedder (ollama/openai/lmstudio) before building the store — for ollama, also that the model is pulled — so a down embedder fails loudly instead of writing empty vectors. No-op for local providers. |
+| `embedder.provider` | `EMBEDDER_PROVIDER` | `azure_openai` | Cloud default (keyless). Or `huggingface`/`fastembed` (local, offline), `openai`/`lmstudio`/`ollama`. |
+| `embedder.model` | `EMBEDDER_MODEL` | `text-embedding-3-small` | azure_openai: the DEPLOYMENT name. Must match the docs vectorizer. |
+| `embedder.base_url` | `EMBEDDER_BASE_URL` | `""` | azure_openai: the resource endpoint (`https://<res>.openai.azure.com`); openai/lmstudio: base url. |
+| `embedder.api_key` | `EMBEDDER_API_KEY` | `${EMBEDDER_API_KEY}` → `.env` | Empty = keyless for azure_openai (Entra ID). Key for OpenAI-compatible providers. |
+| `embedder.api_version` | `EMBEDDER_API_VERSION` | `2024-10-21` | azure_openai API version. |
+| `embedder.dims` | `EMBEDDER_DIMS` | `1536` | Vector dimension — **must** match the model (1536 = text-embedding-3-small, 3072 = -large, 384 = MiniLM). |
+| `embedder.check_reachable` | `EMBEDDER_CHECK_REACHABLE` | `false` | Preflight a remote OpenAI-compatible embedder (ollama/openai/lmstudio). No-op for azure_openai (keyless) and local providers. |
 | `llm.backend` | `LLM_BACKEND` | `claude` | Who does the always-on lesson infer/rewrite: `claude` (Anthropic API) or `local` (OpenAI-compatible, e.g. qwen/LM Studio). infer is always on — not configurable. |
 | `llm.claude_model` | `LLM_CLAUDE_MODEL` | `claude-sonnet-5` | Claude model for `backend: claude` (key from `ANTHROPIC_API_KEY`). |
 | `llm.local_model` | `LLM_LOCAL_MODEL` | `qwen2.5-7b-instruct-1m` | Model for `backend: local`. |
@@ -304,13 +306,14 @@ key. Copy `.env.example` ⟶ `.env` and fill in what your switches need (relocat
 | `guardrails.probe_user_agent` | `PROBE_USER_AGENT` | `Mozilla/5.0 (agentmem url-guardrail)` | User-Agent for the probe. |
 | `retrieval.search_limit` | `LESSON_SEARCH_LIMIT` | `8` | Default `top_k` for semantic recall. |
 | `retrieval.list_limit` | `LESSON_LIST_LIMIT` | `1000` | `top_k` cap when enumerating all lessons. |
-| `rag.backend` | `RAG_BACKEND` | `qdrant` | Where lessons + docs live: `qdrant` (local, offline) or `ai_search` (Azure AI Search). |
+| `rag.backend` | `RAG_BACKEND` | `ai_search` | Where lessons + docs live: `ai_search` (Azure AI Search, default) or `qdrant` (local, offline). |
 | `rag.top_k` | `RAG_TOP_K` | `5` | Default chunks `rag_search` returns. |
 | `rag.qdrant_collection` | `RAG_QDRANT_COLLECTION` | `support_docs` | qdrant backend: documents collection (separate from lessons). |
 | `azure_search.service` | `AZURE_SEARCH_SERVICE` | `""` | Azure AI Search **service name** (→ `https://<service>.search.windows.net`); keyless RBAC. Empty = inert. |
 | `azure_search.lessons_index` | `AZURE_SEARCH_LESSONS_INDEX` | `agentmem-lessons` | Lessons index — written directly by mem0. |
 | `azure_search.docs_index` | `AZURE_SEARCH_DOCS_INDEX` | `support-docs` | Documents index — loaded by a human via the portal from a blob. |
 | `azure_search.vector_field` | `AZURE_SEARCH_VECTOR_FIELD` | `text_vector` | Docs vector column (the portal wizard's default). |
+| `lessons.md_dir` | `LESSONS_MD_DIR` | `lessons` | Project directory to mirror each lesson as `<id>.md` (frontmatter + procedure). Empty = off. |
 
 #### RAG / storage backend
 
@@ -324,9 +327,10 @@ Two independent switches decide where things run:
   - **`qdrant`** (default): local Qdrant, fully offline. Lessons in the mem0 collection;
     documents in `rag.qdrant_collection`, loaded with `mcp__memory__rag_ingest(text,
     source)`.
-  - **`ai_search`**: Azure AI Search (**keyless**, Entra ID — `az login`). Lessons are
-    written directly by mem0 to `lessons_index`; documents are loaded by a human via the
-    Azure Portal ("Import and vectorize data" from a **blob**, integrated vectorization) into
+  - **`ai_search`** (default): Azure AI Search (**keyless**, Entra ID — `az login`). Lessons
+    are embedded locally (see `embedder.*`) and upserted **directly** (already vectorized) to
+    `lessons_index` by mem0 — no blob, no indexer, instant. Documents are loaded by a human
+    via the Azure Portal ("Import and vectorize data", integrated vectorization) into
     `docs_index`, and read via `rag_search`.
 
 ### Control panel
@@ -413,7 +417,7 @@ flowchart TB
 
     subgraph mem ["🗄️ agentmem (el único código real)"]
         STORE["Mem0LessonStore"]
-        EMB["Embedder local<br/>MiniLM multilingüe · 384d"]
+        EMB["Embedder Azure OpenAI<br/>text-embedding-3-small · 1536d"]
         QDR[("Qdrant<br/>BD vectorial")]
     end
 
@@ -567,10 +571,12 @@ docker compose up -d                                # 4. arranca Qdrant en :6333
 # 5. abre el repo en Claude Code — el servidor MCP `memory` + los hooks cargan solos
 ```
 
-El embedder corre **localmente, en el proceso** (sentence-transformers, MiniLM
-multilingüe) — sin API key, totalmente offline tras la descarga única del modelo. Dos
-switches en `config.yaml` eligen el resto: `llm.backend` (`claude` | `local`) y
-`rag.backend` (`qdrant` | `ai_search`).
+Por defecto el embedder es **Azure OpenAI** (`text-embedding-3-small`, 1536d, **sin clave**),
+para que las lecciones compartan el mismo espacio vectorial que los docs en Azure AI Search
+— pon el MISMO modelo en el wizard de docs del portal. Dos switches en `config.yaml` eligen
+el resto: `llm.backend` (`claude` | `local`) y `rag.backend` (`ai_search` | `qdrant`). Para
+un stack totalmente offline: `embedder.provider: huggingface` (MiniLM, 384d) + `rag.backend:
+qdrant`.
 
 ### Servidores MCP
 
@@ -633,12 +639,13 @@ ai_search`) es **sin clave** — Entra ID vía `az login` / managed identity. Co
 | `memory.qdrant_port` | `QDRANT_PORT` | `6333` | Puerto de Qdrant. |
 | `memory.collection` | `MEM_COLLECTION` | `agentcore_lessons` | Colección de Qdrant con las lecciones. |
 | `memory.mem_user` | `MEM_USER` | `agentcore` | Namespace de identidad de mem0 (compartido por todas). |
-| `embedder.provider` | `EMBEDDER_PROVIDER` | `huggingface` | Backend del embedder: `huggingface`/`fastembed` (local), o `openai`/`lmstudio`/`ollama` (remoto). |
-| `embedder.model` | `EMBEDDER_MODEL` | `paraphrase-multilingual-MiniLM-L12-v2` | Modelo de embeddings. |
-| `embedder.base_url` | `EMBEDDER_BASE_URL` | `""` | Endpoint, solo para embedders remotos. |
-| `embedder.api_key` | `EMBEDDER_API_KEY` | `${EMBEDDER_API_KEY}` → `.env` | Key para embedders OpenAI-compatibles; vacía en local. |
-| `embedder.dims` | `EMBEDDER_DIMS` | `384` | Dimensión del vector — **debe** coincidir con el modelo (cambiarla exige colección nueva). |
-| `embedder.check_reachable` | `EMBEDDER_CHECK_REACHABLE` | `true` | Preflight de un embedder remoto (ollama/openai/lmstudio) antes de construir el store — para ollama, también que el modelo esté pulled — para que un embedder caído falle ruidosamente en vez de escribir vectores vacíos. No-op en local. |
+| `embedder.provider` | `EMBEDDER_PROVIDER` | `azure_openai` | Default cloud (sin clave). O `huggingface`/`fastembed` (local, offline), `openai`/`lmstudio`/`ollama`. |
+| `embedder.model` | `EMBEDDER_MODEL` | `text-embedding-3-small` | azure_openai: nombre del DEPLOYMENT. Debe coincidir con el vectorizador de docs. |
+| `embedder.base_url` | `EMBEDDER_BASE_URL` | `""` | azure_openai: endpoint del recurso (`https://<res>.openai.azure.com`); openai/lmstudio: base url. |
+| `embedder.api_key` | `EMBEDDER_API_KEY` | `${EMBEDDER_API_KEY}` → `.env` | Vacío = sin clave para azure_openai (Entra ID). Key para providers OpenAI-compatibles. |
+| `embedder.api_version` | `EMBEDDER_API_VERSION` | `2024-10-21` | Versión de API de azure_openai. |
+| `embedder.dims` | `EMBEDDER_DIMS` | `1536` | Dimensión del vector — **debe** coincidir con el modelo (1536 = text-embedding-3-small, 3072 = -large, 384 = MiniLM). |
+| `embedder.check_reachable` | `EMBEDDER_CHECK_REACHABLE` | `false` | Preflight de un embedder remoto OpenAI-compatible (ollama/openai/lmstudio). No-op para azure_openai (sin clave) y providers locales. |
 | `llm.backend` | `LLM_BACKEND` | `claude` | Quién hace la infer/reescritura (siempre activa, no configurable): `claude` (API de Anthropic) o `local` (OpenAI-compatible, p. ej. qwen/LM Studio). |
 | `llm.claude_model` | `LLM_CLAUDE_MODEL` | `claude-sonnet-5` | Modelo Claude para `backend: claude` (key de `ANTHROPIC_API_KEY`). |
 | `llm.local_model` | `LLM_LOCAL_MODEL` | `qwen2.5-7b-instruct-1m` | Modelo para `backend: local`. |
@@ -656,13 +663,14 @@ ai_search`) es **sin clave** — Entra ID vía `az login` / managed identity. Co
 | `guardrails.probe_user_agent` | `PROBE_USER_AGENT` | `Mozilla/5.0 (agentmem url-guardrail)` | User-Agent del probe. |
 | `retrieval.search_limit` | `LESSON_SEARCH_LIMIT` | `8` | `top_k` por defecto en la recuperación semántica. |
 | `retrieval.list_limit` | `LESSON_LIST_LIMIT` | `1000` | Tope de `top_k` al enumerar todas las lecciones. |
-| `rag.backend` | `RAG_BACKEND` | `qdrant` | Dónde viven lecciones + docs: `qdrant` (local, offline) o `ai_search` (Azure AI Search). |
+| `rag.backend` | `RAG_BACKEND` | `ai_search` | Dónde viven lecciones + docs: `ai_search` (Azure AI Search, default) o `qdrant` (local, offline). |
 | `rag.top_k` | `RAG_TOP_K` | `5` | Nº de chunks que devuelve `rag_search` por defecto. |
 | `rag.qdrant_collection` | `RAG_QDRANT_COLLECTION` | `support_docs` | Backend qdrant: colección de documentos (aparte de las lecciones). |
 | `azure_search.service` | `AZURE_SEARCH_SERVICE` | `""` | **Nombre del servicio** Azure AI Search (→ `https://<service>.search.windows.net`); RBAC sin clave. Vacío = inerte. |
 | `azure_search.lessons_index` | `AZURE_SEARCH_LESSONS_INDEX` | `agentmem-lessons` | Índice de lecciones — escrito directamente por mem0. |
 | `azure_search.docs_index` | `AZURE_SEARCH_DOCS_INDEX` | `support-docs` | Índice de documentos — cargado por un humano vía el portal desde un blob. |
 | `azure_search.vector_field` | `AZURE_SEARCH_VECTOR_FIELD` | `text_vector` | Columna vectorial de docs (default del asistente del portal). |
+| `lessons.md_dir` | `LESSONS_MD_DIR` | `lessons` | Directorio del proyecto donde espejar cada lección como `<id>.md` (frontmatter + procedimiento). Vacío = off. |
 
 #### RAG / backend de almacenamiento
 
@@ -676,9 +684,10 @@ Dos switches independientes deciden dónde corre todo:
   - **`qdrant`** (default): Qdrant local, totalmente offline. Lecciones en la colección
     mem0; documentos en `rag.qdrant_collection`, cargados con `mcp__memory__rag_ingest(text,
     source)`.
-  - **`ai_search`**: Azure AI Search (**sin clave**, Entra ID — `az login`). Las lecciones
-    las escribe mem0 directamente en `lessons_index`; los documentos los carga un humano vía
-    el Azure Portal ("Import and vectorize data" desde un **blob**, vectorización integrada)
+  - **`ai_search`** (default): Azure AI Search (**sin clave**, Entra ID — `az login`). Las
+    lecciones se embeben en local (ver `embedder.*`) y mem0 las sube **directamente** (ya
+    vectorizadas) a `lessons_index` — sin blob, sin indexer, instantáneo. Los documentos los
+    carga un humano vía el Azure Portal ("Import and vectorize data", vectorización integrada)
     en `docs_index`, y se leen vía `rag_search`.
 
 ### Panel de control

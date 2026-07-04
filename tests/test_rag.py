@@ -28,18 +28,25 @@ def test_chunk_text_overlap_terminates_when_overlap_exceeds_size():
     assert chunks and all(len(c) <= 8 for c in chunks)
 
 
-def test_build_rag_defaults_to_qdrant():
-    rag = build_rag(Config())  # default rag_backend = "qdrant"
-    assert isinstance(rag, LocalQdrantRag)
+def test_build_rag_defaults_to_ai_search():
+    # default rag_backend = "ai_search"; with a service set it builds the Azure backend.
+    cfg = Config()
+    assert cfg.rag_backend == "ai_search"
+    cfg.azure_search_service = "mysvc"
+    assert isinstance(build_rag(cfg), AzureSearchRag)
 
 
 def test_build_rag_ai_search_needs_service():
     cfg = Config()
     cfg.rag_backend = "ai_search"
+    cfg.azure_search_service = ""
     assert build_rag(cfg) is None  # empty service => inert
 
-    cfg.azure_search_service = "mysvc"
-    assert isinstance(build_rag(cfg), AzureSearchRag)
+
+def test_build_rag_qdrant_backend():
+    cfg = Config()
+    cfg.rag_backend = "qdrant"
+    assert isinstance(build_rag(cfg), LocalQdrantRag)
 
 
 def test_azure_row_drops_vector_and_keeps_text():

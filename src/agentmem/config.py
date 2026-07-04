@@ -53,6 +53,7 @@ _FIELD_MAP: dict[str, tuple[str, str]] = {
     "EMBEDDER_MODEL": ("embedder", "model"),
     "EMBEDDER_BASE_URL": ("embedder", "base_url"),
     "EMBEDDER_API_KEY": ("embedder", "api_key"),
+    "EMBEDDER_API_VERSION": ("embedder", "api_version"),
     "EMBEDDER_DIMS": ("embedder", "dims"),
     "EMBEDDER_CHECK_REACHABLE": ("embedder", "check_reachable"),
     # llm — infer is ALWAYS on (not configurable); backend picks WHO rewrites the lesson.
@@ -87,6 +88,8 @@ _FIELD_MAP: dict[str, tuple[str, str]] = {
     "AZURE_SEARCH_LESSONS_INDEX": ("azure_search", "lessons_index"),
     "AZURE_SEARCH_DOCS_INDEX": ("azure_search", "docs_index"),
     "AZURE_SEARCH_VECTOR_FIELD": ("azure_search", "vector_field"),
+    # lessons — also mirror each lesson to a project directory as <id>.md (empty => off).
+    "LESSONS_MD_DIR": ("lessons", "md_dir"),
 }
 
 _yaml = YAML()  # round-trip loader (preserves types; comments matter only on write)
@@ -174,23 +177,22 @@ class Config:
     mem_user: str = "agentcore"
 
     # --- Embedder ---
-    # Default is a LOCAL, in-process embedder (sentence-transformers via mem0's
-    # "huggingface" provider): no server, no API key, fully offline after the model
-    # is downloaded once. The multilingual MiniLM handles the Spanish lessons well.
-    # To use a remote OpenAI-compatible embedder instead (e.g. LM Studio), set
-    # EMBEDDER_PROVIDER=openai (or lmstudio) + EMBEDDER_MODEL/BASE_URL/API_KEY.
-    embedder_provider: str = EmbedderProvider.HUGGINGFACE
-    embedder_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
-    embedder_base_url: str = ""   # only for openai/lmstudio/ollama providers
-    embedder_api_key: str = ""    # only for openai-compatible providers
-    # Vector dimension of the embedder, written into the Qdrant collection. MUST match
-    # the model: 384 for paraphrase-multilingual-MiniLM-L12-v2 (default), 768 for nomic,
-    # 1536 for OpenAI text-embedding-3. Changing it requires a fresh collection.
-    embedder_dims: int = 384
-    # For a REMOTE embedder (ollama / openai / lmstudio), preflight that the endpoint is
-    # reachable (and, for ollama, that the model is pulled) before building the store —
-    # so a down embedder fails loudly instead of writing empty/garbage vectors to Qdrant.
-    # No-op for the local in-process providers (huggingface / fastembed).
+    # Cloud-first DEFAULT: Azure OpenAI embeddings (keyless, Entra ID), so lessons share the
+    # SAME vector space as the documents in Azure AI Search. `model` is the Azure DEPLOYMENT
+    # name; `base_url` is the Azure OpenAI resource endpoint; `dims` MUST match the model
+    # (1536 for text-embedding-3-small, 3072 for -large) and is written into the index.
+    # No api_key => mem0's AzureOpenAIEmbedding falls back to DefaultAzureCredential.
+    # For a fully OFFLINE stack instead, set provider: huggingface + model:
+    # paraphrase-multilingual-MiniLM-L12-v2 + dims: 384 (and typically rag.backend: qdrant).
+    embedder_provider: str = EmbedderProvider.AZURE_OPENAI
+    embedder_model: str = "text-embedding-3-small"
+    embedder_base_url: str = ""   # azure_openai: the resource endpoint; openai/lmstudio: base url
+    embedder_api_key: str = ""    # empty => keyless for azure_openai (DefaultAzureCredential)
+    embedder_api_version: str = "2024-10-21"   # azure_openai only
+    embedder_dims: int = 1536
+    # For a REMOTE OpenAI-compatible embedder (ollama / openai / lmstudio) preflight that the
+    # endpoint is reachable before building the store. No-op for the local in-process
+    # providers (huggingface / fastembed) and for azure_openai (keyless, not probed here).
     embedder_check_reachable: bool = True
 
     # --- LLM (llm.* in config.yaml) — the ALWAYS-ON infer/rewrite of a lesson ---
@@ -238,7 +240,7 @@ class Config:
     #   * "ai_search" — Azure AI Search (keyless). Lessons written directly by mem0 to the
     #                   lessons index; documents loaded by a human via the Azure Portal from
     #                   a blob (integrated vectorization) into the docs index.
-    rag_backend: str = RagBackend.QDRANT           # "qdrant" | "ai_search"
+    rag_backend: str = RagBackend.AI_SEARCH        # "qdrant" | "ai_search" (default: cloud)
     rag_top_k: int = 5                             # default chunks rag_search returns
     rag_qdrant_collection: str = "support_docs"    # qdrant backend: docs collection (not lessons)
 
@@ -253,6 +255,12 @@ class Config:
     azure_search_docs_index: str = "support-docs"
     azure_search_vector_field: str = "text_vector"
 
+    # --- Lessons (lessons.* in config.yaml) ---
+    # Mirror each lesson to a project directory as "<id>.md" (YAML frontmatter + procedure)
+    # — a human-readable, versionable copy alongside the vector store. Relative paths resolve
+    # against the repo root. Empty => off.
+    lessons_md_dir: str = "lessons"
+
     @classmethod
     def from_env(cls) -> "Config":
         return cls(
@@ -264,6 +272,7 @@ class Config:
             embedder_model=os.environ.get("EMBEDDER_MODEL", cls.embedder_model),
             embedder_base_url=os.environ.get("EMBEDDER_BASE_URL", cls.embedder_base_url),
             embedder_api_key=os.environ.get("EMBEDDER_API_KEY", cls.embedder_api_key),
+            embedder_api_version=os.environ.get("EMBEDDER_API_VERSION", cls.embedder_api_version),
             embedder_dims=int(os.environ.get("EMBEDDER_DIMS", cls.embedder_dims)),
             embedder_check_reachable=_env_bool("EMBEDDER_CHECK_REACHABLE", cls.embedder_check_reachable),
             llm_backend=os.environ.get("LLM_BACKEND", cls.llm_backend),
@@ -290,6 +299,7 @@ class Config:
             azure_search_lessons_index=os.environ.get("AZURE_SEARCH_LESSONS_INDEX", cls.azure_search_lessons_index),
             azure_search_docs_index=os.environ.get("AZURE_SEARCH_DOCS_INDEX", cls.azure_search_docs_index),
             azure_search_vector_field=os.environ.get("AZURE_SEARCH_VECTOR_FIELD", cls.azure_search_vector_field),
+            lessons_md_dir=os.environ.get("LESSONS_MD_DIR", cls.lessons_md_dir),
         )
 
 

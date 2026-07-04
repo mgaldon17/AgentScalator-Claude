@@ -28,6 +28,6 @@ sentence-transformers==4.1.0
 # --- LLM infer (always on). Default backend = claude (Anthropic API). ---
 anthropic==0.109.2
 
-# --- Cloud RAG / storage backend (rag.backend: ai_search) — Azure AI Search, keyless ---
+# --- Cloud default: Azure OpenAI embeddings + Azure AI Search (rag.backend: ai_search) — keyless ---
 azure-identity==1.25.3
 azure-search-documents==12.0.0

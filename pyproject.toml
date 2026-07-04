@@ -17,6 +17,11 @@ dependencies = [
     # Claude does the always-on lesson infer/rewrite when llm.backend: claude (the default);
     # mem0's anthropic provider needs this. Key from ANTHROPIC_API_KEY.
     "anthropic>=0.40",
+    # Cloud default: Azure OpenAI embeddings + Azure AI Search (rag.backend: ai_search),
+    # keyless via Entra ID. Needed for the shipped config; an offline stack (huggingface +
+    # qdrant) simply doesn't call them.
+    "azure-identity>=1.17",
+    "azure-search-documents>=11.5",
     # Round-trip YAML for config.yaml: comment/-order-preserving load+dump so the control
     # dashboard can edit the file in place without clobbering its comments.
     "ruamel.yaml>=0.18",
@@ -28,13 +33,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Cloud RAG backend (rag.backend: cloud) — read an Azure AI Search index, keyless via
-# Entra ID. Optional: the default local Qdrant backend needs none of this (it reuses the
-# core mem0 + qdrant-client stack). Install with: pip install -e '.[rag]'
-rag = [
-    "azure-identity>=1.17",
-    "azure-search-documents>=11.5",
-]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",

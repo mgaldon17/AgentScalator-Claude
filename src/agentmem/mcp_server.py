@@ -33,6 +33,7 @@ from mcp.server.fastmcp import FastMCP
 from .config import Config, load
 from .injection import scan_for_injection
 from .lesson import Lesson
+from .mdsink import build_md_sink
 from .ports import LessonStore
 from .rag import build_rag
 from .store import build_store
@@ -54,6 +55,34 @@ def _rag():
     """Build the RAG backend once, lazily (same rationale as ``_store``). ``None`` when the
     configured backend is not set up (cloud with no endpoint)."""
     return build_rag(load())
+
+
+@lru_cache(maxsize=1)
+def _md_sink():
+    """Build the lesson .md directory sink once, lazily. ``None`` when lessons.md_dir unset."""
+    return build_md_sink(load())
+
+
+async def _mirror(lesson: Lesson) -> None:
+    """Best-effort: mirror a lesson to the project .md directory. Never raises — a file
+    failure must not break the tool (the lesson is already saved in the store)."""
+    sink = _md_sink()
+    if sink is None:
+        return
+    try:
+        await asyncio.to_thread(sink.write, lesson)
+    except Exception as exc:  # noqa: BLE001 - mirroring is best-effort
+        _log.warning("md mirror failed for lesson %s: %s", lesson.lesson_id, exc)
+
+
+async def _mirror_delete(lesson_id: str) -> None:
+    sink = _md_sink()
+    if sink is None:
+        return
+    try:
+        await asyncio.to_thread(sink.delete, lesson_id)
+    except Exception as exc:  # noqa: BLE001 - mirroring is best-effort
+        _log.warning("md mirror delete failed for lesson %s: %s", lesson_id, exc)
 
 
 def _cfg() -> Config:
@@ -100,6 +129,7 @@ async def lesson_add(title: str, content: str) -> dict:
     lesson = Lesson.learned(title=title, content=content)
     hits = _screen(lesson)
     await _store().add(lesson)
+    await _mirror(lesson)   # write <id>.md to the project dir (best-effort; off unless configured)
     view = _view(lesson)
     if hits:
         view["warning"] = f"possible prompt injection ({', '.join(hits)}); quarantined for review"
@@ -116,6 +146,7 @@ async def lesson_inject(title: str, content: str) -> dict:
     # (it loses its auto-trusted status) instead of being injected immediately.
     hits = _screen(lesson)
     await _store().add(lesson)
+    await _mirror(lesson)
     view = _view(lesson)
     if hits:
         view["warning"] = f"possible prompt injection ({', '.join(hits)}); quarantined for review"
@@ -127,7 +158,10 @@ async def lesson_reinforce(lesson_id: str) -> dict:
     """A reused lesson actually worked — increment its ``reuse`` counter."""
     await _store().reinforce(lesson_id)
     lesson = await _store().get(lesson_id)
-    return _view(lesson) if lesson else {"error": f"lesson '{lesson_id}' not found"}
+    if lesson is None:
+        return {"error": f"lesson '{lesson_id}' not found"}
+    await _mirror(lesson)   # keep the .md's frontmatter (reuse) in sync
+    return _view(lesson)
 
 
 @mcp.tool()
@@ -135,7 +169,10 @@ async def lesson_record_failure(lesson_id: str) -> dict:
     """A reused lesson did NOT work — increment its ``failure_count`` counter."""
     await _store().record_failure(lesson_id)
     lesson = await _store().get(lesson_id)
-    return _view(lesson) if lesson else {"error": f"lesson '{lesson_id}' not found"}
+    if lesson is None:
+        return {"error": f"lesson '{lesson_id}' not found"}
+    await _mirror(lesson)
+    return _view(lesson)
 
 
 @mcp.tool()
@@ -149,13 +186,18 @@ async def lesson_list(pending_review: bool | None = None) -> list[dict]:
 async def lesson_resolve(lesson_id: str) -> dict:
     """Accept a learned lesson — flip pending_review off (used by /review)."""
     lesson = await _store().resolve(lesson_id)
-    return _view(lesson) if lesson else {"error": f"lesson '{lesson_id}' not found"}
+    if lesson is None:
+        return {"error": f"lesson '{lesson_id}' not found"}
+    await _mirror(lesson)   # keep the .md's frontmatter (pending_review) in sync
+    return _view(lesson)
 
 
 @mcp.tool()
 async def lesson_delete(lesson_id: str) -> dict:
     """Delete a lesson by id."""
     deleted = await _store().delete(lesson_id)
+    if deleted:
+        await _mirror_delete(lesson_id)   # remove the mirrored .md too
     return {"deleted": deleted, "id": lesson_id}
 
 

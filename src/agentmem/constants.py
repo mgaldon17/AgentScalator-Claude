@@ -80,6 +80,7 @@ class EmbedderProvider(StrEnum):
     OLLAMA = "ollama"
     OPENAI = "openai"
     LMSTUDIO = "lmstudio"
+    AZURE_OPENAI = "azure_openai"   # Azure OpenAI embeddings (keyless); the cloud default
 
 
 class LlmProvider(StrEnum):

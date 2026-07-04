@@ -11,15 +11,32 @@ from agentmem.constants import EmbedderProvider
 from agentmem.store import _mem0_config
 
 
+def test_azure_openai_embedder_is_default_and_keyless():
+    # Cloud default: Azure OpenAI embeddings via azure_kwargs, NO api_key (DefaultAzureCredential).
+    cfg = Config()
+    assert cfg.embedder_provider == EmbedderProvider.AZURE_OPENAI
+    cfg.embedder_base_url = "https://res.openai.azure.com"
+    embedder = _mem0_config(cfg)["embedder"]["config"]
+    assert embedder["model"] == "text-embedding-3-small"
+    assert "api_key" not in embedder
+    assert embedder["azure_kwargs"] == {
+        "azure_endpoint": "https://res.openai.azure.com",
+        "azure_deployment": "text-embedding-3-small",
+        "api_version": cfg.embedder_api_version,
+    }
+
+
 def test_local_embedder_maps_to_minimal_config():
-    cfg = Config()  # defaults: local huggingface embedder
+    cfg = Config()
+    cfg.rag_backend = "qdrant"                          # qdrant vector store
+    cfg.embedder_provider = EmbedderProvider.HUGGINGFACE
+    cfg.embedder_model = "paraphrase-multilingual-MiniLM-L12-v2"
     mem = _mem0_config(cfg)
 
     assert mem["vector_store"]["provider"] == "qdrant"
     assert mem["vector_store"]["config"]["collection_name"] == cfg.collection
-    assert mem["vector_store"]["config"]["embedding_model_dims"] == cfg.embedder_dims
     assert mem["embedder"]["provider"] == EmbedderProvider.HUGGINGFACE
-    # a local provider carries only the model name (no base_url / api_key keys)
+    # a local provider carries only the model name (no base_url / api_key / azure_kwargs)
     assert mem["embedder"]["config"] == {"model": cfg.embedder_model}
 
 
@@ -56,8 +73,17 @@ def test_llm_backend_local_maps_to_openai_lmstudio():
     assert llm["config"]["api_key"]  # some placeholder key for LM Studio
 
 
-def test_vector_store_qdrant_is_default():
-    cfg = Config()  # rag_backend defaults to "qdrant"
+def test_vector_store_ai_search_is_default():
+    # rag_backend defaults to "ai_search" → lessons live in Azure AI Search.
+    cfg = Config()
+    assert cfg.rag_backend == "ai_search"
+    vs = _mem0_config(cfg)["vector_store"]
+    assert vs["provider"] == "azure_ai_search"
+
+
+def test_vector_store_qdrant_when_selected():
+    cfg = Config()
+    cfg.rag_backend = "qdrant"
     vs = _mem0_config(cfg)["vector_store"]
     assert vs["provider"] == "qdrant"
     assert vs["config"]["collection_name"] == cfg.collection

@@ -17,24 +17,23 @@ memory:
   # Namespace for mem0's identity filters; all lessons share it.
   mem_user: agentcore
 
-# --- Embedder ---
-# Default is a LOCAL, in-process embedder (sentence-transformers via mem0's "huggingface"
-# provider): no server, no API key, offline after the one-time download. For a remote
-# OpenAI-compatible embedder set provider: openai (or lmstudio) plus model/base_url/
-# api_key/dims.
+# --- Embedder (cloud default: Azure OpenAI, keyless) ---
+# Lessons are embedded with Azure OpenAI so they share the SAME vector space as the docs in
+# Azure AI Search. `model` is the Azure DEPLOYMENT name; `base_url` is the Azure OpenAI
+# resource endpoint; `dims` MUST match the model (1536 for text-embedding-3-small, 3072 for
+# -large) and is written into the index. `api_key` empty => KEYLESS (DefaultAzureCredential).
+# ⚠️ Use the SAME model/dims here that you pick for the docs vectorizer in the portal wizard,
+# so lessons and documents live in one comparable space.
+# For a fully OFFLINE stack: provider: huggingface + model: paraphrase-multilingual-MiniLM-L12-v2
+# + dims: 384 (and typically rag.backend: qdrant).
 embedder:
-  provider: huggingface
-  model: paraphrase-multilingual-MiniLM-L12-v2
-  base_url: ""
-  api_key: ${EMBEDDER_API_KEY}   # from .env (empty for the local huggingface embedder)
-  # MUST match the model's output dim (384 for the default MiniLM, 768 nomic, 1536 for
-  # OpenAI text-embedding-3). Changing it requires a fresh Qdrant collection.
-  dims: 384
-  # For a REMOTE embedder (ollama/openai/lmstudio), preflight that the endpoint is up
-  # (and, for ollama, that the model is pulled) before building the store — so a down
-  # embedder fails loudly instead of writing empty vectors to Qdrant. No-op for the local
-  # huggingface/fastembed providers.
-  check_reachable: true
+  provider: azure_openai
+  model: text-embedding-3-small        # the Azure OpenAI embedding deployment name
+  base_url: ""                          # e.g. https://<resource>.openai.azure.com  (fill in)
+  api_key: ${EMBEDDER_API_KEY}          # empty => keyless (Entra ID)
+  api_version: "2024-10-21"
+  dims: 1536                            # text-embedding-3-small = 1536 (-large = 3072)
+  check_reachable: false                # azure_openai is keyless; skip the http probe
 
 # --- LLM (the ALWAYS-ON infer/rewrite of a lesson before it is stored) ---
 # Every lesson is rewritten/reconciled by an LLM on write — infer is ALWAYS on and is NOT
@@ -76,25 +75,32 @@ retrieval:
   search_limit: 8
   list_limit: 1000
 
-# --- RAG / storage backend — where lessons + document knowledge live ---
+# --- RAG / storage backend — where lessons + document knowledge live (DEFAULT: ai_search) ---
 # backend switch (governs BOTH the lessons store and the document RAG):
+#   ai_search — Azure AI Search (keyless). Lessons embedded locally and upserted DIRECTLY
+#               (already vectorized) into the lessons index by mem0 — no blob, instant.
+#               Documents loaded by a human via the Azure Portal into the docs index.
 #   qdrant    — local Qdrant (offline). Lessons in the mem0 collection; documents in
 #               qdrant_collection, loaded with mcp__memory__rag_ingest.
-#   ai_search — Azure AI Search (keyless). Lessons written directly by mem0 to the lessons
-#               index; documents loaded by a human via the Azure Portal from a blob.
 rag:
-  backend: qdrant         # qdrant | ai_search
+  backend: ai_search      # ai_search | qdrant
   top_k: 5
   qdrant_collection: support_docs   # qdrant backend only (documents, separate from lessons)
 
-# --- Azure AI Search (used ONLY when rag.backend: ai_search) ---
+# --- Azure AI Search (used when rag.backend: ai_search — the default) ---
 # Auth is KEYLESS (Entra ID / RBAC via DefaultAzureCredential — `az login`); no key here.
-# `service` is the SEARCH SERVICE NAME (→ https://<service>.search.windows.net); empty =>
-# the ai_search backend is inert. lessons_index is written directly by mem0; docs_index is
-# the PDF/Word index a human loads via the portal from a blob (integrated vectorization on
-# vector_field, the wizard's default column).
+# `service` is the SEARCH SERVICE NAME (→ https://<service>.search.windows.net). Lessons are
+# embedded with Azure OpenAI (see embedder.*) and written DIRECTLY by mem0 to lessons_index;
+# docs_index is the PDF/Word index a human loads via the portal (integrated vectorization on
+# vector_field). Keep embedder.* and the docs vectorizer on the SAME model/dims.
 azure_search:
-  service: ""
+  service: rag-agentscalator      # → https://rag-agentscalator.search.windows.net
   lessons_index: agentmem-lessons
   docs_index: support-docs
   vector_field: text_vector
+
+# --- Lessons — human-readable .md mirror ---
+# Write each lesson to this project directory as "<id>.md" (frontmatter + procedure), a
+# versionable copy alongside the vector store. Relative to the repo root; empty => off.
+lessons:
+  md_dir: lessons

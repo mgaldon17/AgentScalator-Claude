@@ -140,18 +140,29 @@ class Mem0LessonStore:
 def _embedder_config(cfg: Config) -> dict:
     """mem0 embedder config for the configured provider.
 
-    Local (no server): ``huggingface`` (sentence-transformers) / ``fastembed`` only
-    need a model name. Remote/OpenAI-compatible (``openai``/``lmstudio``) take a base
-    URL + key; ``ollama`` takes its own base URL. The model name is always passed."""
+    ``azure_openai`` (the cloud default) takes ``azure_kwargs`` (endpoint/deployment/
+    api_version) with NO api_key, so mem0's AzureOpenAIEmbedding falls back to
+    ``DefaultAzureCredential`` (keyless). Local (no server): ``huggingface`` /
+    ``fastembed`` only need a model name. ``ollama`` takes its own base URL;
+    ``openai``/``lmstudio`` take a base URL + key. The model name is always passed."""
     provider = cfg.embedder_provider.lower()
     embedder_cfg: dict = {"model": cfg.embedder_model}
+    if provider == EmbedderProvider.AZURE_OPENAI:
+        embedder_cfg["azure_kwargs"] = {
+            "azure_endpoint": cfg.embedder_base_url,
+            "azure_deployment": cfg.embedder_model,
+            "api_version": cfg.embedder_api_version,
+        }
+        if cfg.embedder_api_key:   # optional; empty => keyless (DefaultAzureCredential)
+            embedder_cfg["azure_kwargs"]["api_key"] = cfg.embedder_api_key
+        return embedder_cfg
     if provider in (EmbedderProvider.HUGGINGFACE, EmbedderProvider.FASTEMBED):
         return embedder_cfg
     if provider == EmbedderProvider.OLLAMA:
         if cfg.embedder_base_url:
             embedder_cfg["ollama_base_url"] = cfg.embedder_base_url
         return embedder_cfg
-    # openai / lmstudio / azure_openai and other OpenAI-compatible providers
+    # openai / lmstudio and other OpenAI-compatible providers
     if cfg.embedder_base_url:
         embedder_cfg["openai_base_url"] = cfg.embedder_base_url
     if cfg.embedder_api_key:
