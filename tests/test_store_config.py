@@ -34,10 +34,43 @@ def test_remote_embedder_carries_base_url_and_key():
     assert embedder["api_key"] == "sk-test"
 
 
-def test_llm_block_is_always_present():
-    # mem0 requires it even when infer=False; sampling params are passed through verbatim.
-    cfg = Config()
+def test_llm_backend_claude_maps_to_anthropic_keyless():
+    # Default backend = claude → mem0 provider "anthropic", the Claude model, and NO api_key
+    # (mem0 reads ANTHROPIC_API_KEY from env). No top_p (Anthropic rejects it with temperature).
+    cfg = Config()  # llm_backend defaults to "claude"
     llm = _mem0_config(cfg)["llm"]
-    assert llm["provider"] == cfg.llm_provider
-    assert llm["config"]["model"] == cfg.llm_model
+    assert llm["provider"] == "anthropic"
+    assert llm["config"]["model"] == cfg.llm_claude_model
+    assert "api_key" not in llm["config"]
+    assert "top_p" not in llm["config"]
     assert llm["config"]["temperature"] == cfg.llm_temperature
+
+
+def test_llm_backend_local_maps_to_openai_lmstudio():
+    cfg = Config()
+    cfg.llm_backend = "local"
+    llm = _mem0_config(cfg)["llm"]
+    assert llm["provider"] == "openai"
+    assert llm["config"]["model"] == cfg.llm_local_model
+    assert llm["config"]["openai_base_url"] == cfg.llm_local_base_url
+    assert llm["config"]["api_key"]  # some placeholder key for LM Studio
+
+
+def test_vector_store_qdrant_is_default():
+    cfg = Config()  # rag_backend defaults to "qdrant"
+    vs = _mem0_config(cfg)["vector_store"]
+    assert vs["provider"] == "qdrant"
+    assert vs["config"]["collection_name"] == cfg.collection
+
+
+def test_vector_store_ai_search_is_keyless():
+    # rag.backend: ai_search → lessons stored in Azure AI Search directly, keyless.
+    cfg = Config()
+    cfg.rag_backend = "ai_search"
+    cfg.azure_search_service = "mysvc"
+    vs = _mem0_config(cfg)["vector_store"]
+    assert vs["provider"] == "azure_ai_search"
+    assert vs["config"]["service_name"] == "mysvc"
+    assert vs["config"]["collection_name"] == cfg.azure_search_lessons_index
+    assert "api_key" not in vs["config"]
+    assert vs["config"]["embedding_model_dims"] == cfg.embedder_dims

@@ -1,0 +1,33 @@
+# agentmem runtime dependencies — for exporting/sharing this project with your team.
+#
+# Quick start (from the repo root):
+#   python -m venv .venv
+#   source .venv/bin/activate          # Windows: .venv\Scripts\activate
+#   pip install -r requirements.txt
+#   pip install -e .                   # install the agentmem package itself (editable)
+#   docker compose up -d               # start Qdrant (needed for rag.backend: qdrant)
+#
+# Pins are the versions this project is tested against. The two config switches
+# (config.yaml) decide which of these get exercised:
+#   * llm.backend: claude  → anthropic (default)    | local → an OpenAI-compatible LLM
+#   * rag.backend: qdrant  → qdrant-client (default)| ai_search → azure-* below
+# Everything is installed so BOTH switch positions work out of the box.
+
+# --- Lesson memory (mem0 over Qdrant) + the MCP server + config ---
+mem0ai==2.0.7
+qdrant-client==1.18.0
+mcp==1.28.0
+httpx==0.28.1
+pydantic==2.12.5
+ruamel.yaml==0.19.1
+
+# --- Local, in-process embedder (default; also powers the local RAG) ---
+# Pinned <5: 5.x pulls torchcodec (FFmpeg) which breaks the import on macOS without ffmpeg.
+sentence-transformers==4.1.0
+
+# --- LLM infer (always on). Default backend = claude (Anthropic API). ---
+anthropic==0.109.2
+
+# --- Cloud RAG / storage backend (rag.backend: ai_search) — Azure AI Search, keyless ---
+azure-identity==1.25.3
+azure-search-documents==12.0.0

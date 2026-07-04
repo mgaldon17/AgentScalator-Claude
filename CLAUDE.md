@@ -101,24 +101,30 @@ a URL).
 
 ## Setup
 
-- `docker compose up -d` starts Qdrant (the lesson store) on `localhost:6333`.
-- `pip install -e .` installs `agentmem` (mem0 + qdrant-client + mcp + httpx +
-  ruamel.yaml). The `memory` MCP server runs as `python -m agentmem.mcp_server` (wired in
-  `.mcp.json`).
-- Memory/embedder/LLM/guardrail settings live in `config.yaml` (nested by section) at the
-  repo root, loaded by `src/agentmem/config.py`; each `section.key` maps to a flat env
-  name via `config._FIELD_MAP`. A real environment variable overrides the file, and the
-  file overrides the built-in defaults (point elsewhere with `AGENTMEM_CONFIG`). **Secrets
-  (API keys) live only in a gitignored `.env`** (loaded first, `AGENTMEM_DOTENV` to
-  relocate); `config.yaml` references them as `${EMBEDDER_API_KEY}` / `${LLM_API_KEY}` and
-  the loader expands the placeholders. The
-  embedder runs **locally in-process** (sentence-transformers, multilingual MiniLM) — no
-  LM Studio, no API key, fully offline after the model downloads once. To use a remote
-  OpenAI-compatible embedder instead, set `embedder.provider: openai` +
-  `model/base_url/api_key/dims`. Changing the embedder requires a fresh Qdrant collection
-  (the vector dimension changes).
-- The `llm.*` block is only exercised when `llm.infer: true` (mem0 rewrites/reconciles a
-  lesson's text on write via that LLM); with the default `infer: false` mem0 builds the
-  LLM but never calls it — `add` stores the lesson verbatim and `search` is pure vector
-  similarity. The `temperature/top_p/max_tokens` params affect only that `infer: true`
-  write path, never retrieval.
+- Reproducible env (share `requirements.txt` + the repo with your team): `python -m venv
+  .venv && source .venv/bin/activate`, then `pip install -r requirements.txt` and
+  `pip install -e .`. `docker compose up -d` starts Qdrant on `localhost:6333` (needed for
+  `rag.backend: qdrant`). The `memory` MCP server runs as `python -m agentmem.mcp_server`
+  (wired in `.mcp.json`).
+- Settings live in `config.yaml` (nested by section) at the repo root, loaded by
+  `src/agentmem/config.py`; each `section.key` maps to a flat env name via
+  `config._FIELD_MAP`. A real environment variable overrides the file, and the file
+  overrides the built-in defaults (point elsewhere with `AGENTMEM_CONFIG`). **Secrets (API
+  keys) live only in a gitignored `.env`** (loaded first, `AGENTMEM_DOTENV` to relocate):
+  `ANTHROPIC_API_KEY` (for `llm.backend: claude`) or `LLM_API_KEY` (for `llm.backend:
+  local`). The lesson embedder runs **locally in-process** (sentence-transformers,
+  multilingual MiniLM, 384-dim) — no API key, offline after the model downloads once.
+- **Two switches** decide where things run (everything else is coherent with them):
+  - `llm.backend` — who performs the ALWAYS-ON lesson infer/rewrite (infer is *not*
+    configurable). `claude` → the Anthropic API (mem0 provider `anthropic`, key from
+    `ANTHROPIC_API_KEY`); `local` → an OpenAI-compatible LLM at `llm.local_base_url`
+    (e.g. qwen via LM Studio). The chat/agent itself is always Claude Code — this is only
+    the internal lesson-rewrite step. `temperature/top_p/max_tokens` apply to that write
+    path, never to retrieval.
+  - `rag.backend` — where lessons AND documents (`mcp__memory__rag_search` /
+    `rag_ingest`) live. `qdrant` → local Qdrant (offline); documents in
+    `rag.qdrant_collection`. `ai_search` → Azure AI Search (**keyless**, Entra ID /
+    `DefaultAzureCredential`): lessons written directly by mem0 to
+    `azure_search.lessons_index`; documents loaded by a human via the Azure Portal from a
+    blob into `azure_search.docs_index`. Set `azure_search.service` (the search service
+    name) for this backend.

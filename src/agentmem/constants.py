@@ -83,9 +83,25 @@ class EmbedderProvider(StrEnum):
 
 
 class LlmProvider(StrEnum):
-    """LLM providers (only exercised on the ``infer=True`` write path)."""
+    """mem0 LLM provider ids that each :class:`LlmBackend` maps to."""
 
-    OPENAI = "openai"
+    OPENAI = "openai"        # local, OpenAI-compatible (LM Studio / qwen)
+    ANTHROPIC = "anthropic"  # cloud Claude (same family as the agent)
+
+
+class LlmBackend(StrEnum):
+    """Who performs the ALWAYS-ON infer (rewriting a lesson before it is stored).
+    Selected by ``llm.backend`` in config; infer itself is not configurable."""
+
+    CLAUDE = "claude"        # Anthropic API — mem0 provider "anthropic" (needs ANTHROPIC_API_KEY)
+    LOCAL = "local"          # a local OpenAI-compatible LLM — mem0 provider "openai"
+
+
+class RagBackend(StrEnum):
+    """Where lessons + document knowledge live. Selected by ``rag.backend`` in config."""
+
+    QDRANT = "qdrant"        # local Qdrant (offline)
+    AI_SEARCH = "ai_search"  # Azure AI Search (keyless); docs loaded via a blob + the portal
 
 
 # --------------------------------------------------------------------------- #

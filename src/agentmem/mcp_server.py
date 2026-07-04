@@ -14,10 +14,17 @@ Tools (all persist to the same Qdrant the sibling ``agentcore`` repo uses):
   * ``lesson_list(pending_review?)``     — list lessons, optionally only pending review.
   * ``lesson_resolve(lesson_id)``        — accept a learned lesson (flip pending_review off).
   * ``lesson_delete(lesson_id)``         — remove a lesson.
+
+Document RAG (knowledge, separate from lessons; backend from ``rag.backend`` — local
+Qdrant or cloud Azure AI Search):
+  * ``rag_search(query, top_k)``         — retrieve the doc chunks relevant to a query.
+  * ``rag_ingest(text, source)``         — load a document into the LOCAL RAG (cloud is
+                                           loaded via the Azure Portal).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from functools import lru_cache
 
@@ -27,6 +34,7 @@ from .config import Config, load
 from .injection import scan_for_injection
 from .lesson import Lesson
 from .ports import LessonStore
+from .rag import build_rag
 from .store import build_store
 
 _log = logging.getLogger("agentmem.mcp_server")
@@ -39,6 +47,13 @@ def _store() -> LessonStore:
     """Build the store once, lazily — so importing the module (e.g. list_tools)
     doesn't require Qdrant to be up until a tool actually runs."""
     return build_store(load())
+
+
+@lru_cache(maxsize=1)
+def _rag():
+    """Build the RAG backend once, lazily (same rationale as ``_store``). ``None`` when the
+    configured backend is not set up (cloud with no endpoint)."""
+    return build_rag(load())
 
 
 def _cfg() -> Config:
@@ -142,6 +157,35 @@ async def lesson_delete(lesson_id: str) -> dict:
     """Delete a lesson by id."""
     deleted = await _store().delete(lesson_id)
     return {"deleted": deleted, "id": lesson_id}
+
+
+@mcp.tool()
+async def rag_search(query: str, top_k: int | None = None) -> list[dict]:
+    """Retrieve the document chunks most relevant to ``query`` from the RAG knowledge base
+    (local Qdrant or cloud Azure AI Search, per config). Use this to ground answers /
+    follow instructions found in the loaded PDFs/Word docs. Returns
+    [{text, source, score}]; ``top_k`` defaults to Config.rag_top_k."""
+    rag = _rag()
+    if rag is None:
+        return [{"error": "RAG backend not configured (set rag.backend, and for cloud "
+                          "azure_search.endpoint, in config.yaml)."}]
+    k = top_k if top_k is not None else _cfg().rag_top_k
+    return await asyncio.to_thread(rag.search, query, k)
+
+
+@mcp.tool()
+async def rag_ingest(text: str, source: str | None = None) -> dict:
+    """Load a document into the LOCAL RAG: chunk ``text`` and index it (``source`` is an
+    optional label, e.g. the filename). Only for rag.backend=local — the cloud backend is
+    loaded via the Azure Portal. Returns {chunks_indexed, source}."""
+    rag = _rag()
+    if rag is None:
+        return {"error": "RAG backend not configured (see config.yaml rag.*)."}
+    try:
+        written = await asyncio.to_thread(rag.ingest, text, source)
+    except RuntimeError as exc:
+        return {"error": str(exc)}
+    return {"chunks_indexed": written, "source": source}
 
 
 def main() -> None:

@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from .config import Config
-from .constants import EmbedderProvider, Mem0Key, MetaKey
+from .constants import EmbedderProvider, LlmBackend, LlmProvider, RagBackend, Mem0Key, MetaKey
 from .lesson import Lesson, LessonOrigin
 from .ports import LessonStore
 
@@ -195,37 +196,76 @@ def _check_embedder_reachable(cfg: Config) -> None:
         ) from exc
 
 
+def _vector_store_config(cfg: Config) -> dict:
+    """mem0 ``vector_store`` block for the configured RAG backend (the lessons store).
+
+    ``qdrant`` (local) is host/port/collection. ``ai_search`` targets Azure AI Search
+    keyless: mem0 embeds locally and upserts the vectors into the lessons index directly
+    (no api_key => DefaultAzureCredential). ``embedding_model_dims`` MUST match the embedder
+    either way."""
+    if cfg.rag_backend.lower() == RagBackend.AI_SEARCH:
+        return {
+            "provider": "azure_ai_search",
+            "config": {
+                "service_name": cfg.azure_search_service,
+                "collection_name": cfg.azure_search_lessons_index,
+                "embedding_model_dims": cfg.embedder_dims,
+                # no api_key => mem0's AzureAISearch uses DefaultAzureCredential (keyless)
+            },
+        }
+    return {
+        "provider": "qdrant",
+        "config": {
+            "host": cfg.qdrant_host,
+            "port": cfg.qdrant_port,
+            "collection_name": cfg.collection,
+            # mem0's vector store does NOT derive this from the embedder; it must
+            # match the model's output dim or the store rejects the vectors.
+            "embedding_model_dims": cfg.embedder_dims,
+        },
+    }
+
+
+def _llm_config(cfg: Config) -> dict:
+    """mem0 ``llm`` block for the ALWAYS-ON infer/rewrite. ``llm_backend`` picks WHO:
+
+    * ``claude`` — mem0 provider ``anthropic`` (the key is read from ANTHROPIC_API_KEY by
+      mem0). Anthropic rejects temperature+top_p together, so mem0 keeps temperature.
+    * ``local``  — mem0 provider ``openai`` at ``llm_local_base_url`` (LM Studio / qwen);
+      the key is read from LLM_API_KEY (LM Studio accepts any placeholder)."""
+    if cfg.llm_backend.lower() == LlmBackend.CLAUDE:
+        return {
+            "provider": LlmProvider.ANTHROPIC,
+            "config": {
+                "model": cfg.llm_claude_model,
+                "temperature": cfg.llm_temperature,
+                "max_tokens": cfg.llm_max_tokens,
+                # api_key omitted => mem0's AnthropicLLM reads ANTHROPIC_API_KEY from env.
+            },
+        }
+    return {
+        "provider": LlmProvider.OPENAI,
+        "config": {
+            "model": cfg.llm_local_model,
+            "openai_base_url": cfg.llm_local_base_url,
+            "api_key": os.environ.get("LLM_API_KEY", "lm-studio"),
+            "temperature": cfg.llm_temperature,
+            "top_p": cfg.llm_top_p,
+            "max_tokens": cfg.llm_max_tokens,
+        },
+    }
+
+
 def _mem0_config(cfg: Config) -> dict:
     """Translate our ``Config`` into mem0's nested config schema (vector_store + embedder
     + llm). Pure — no mem0 import, no I/O — so the mapping is unit-testable on its own.
 
-    The ``llm`` block is built unconditionally because mem0 requires it, but it is only
-    CALLED when ``cfg.infer=True`` (mem0's single add()-time fact-extraction call); its
-    sampling params apply to that call and never to retrieval."""
+    infer is ALWAYS on for this store, so the ``llm`` block is always exercised at add()
+    time (mem0's fact-extraction call); its sampling params apply there, never to search."""
     return {
-        "vector_store": {
-            "provider": "qdrant",
-            "config": {
-                "host": cfg.qdrant_host,
-                "port": cfg.qdrant_port,
-                "collection_name": cfg.collection,
-                # mem0's vector store does NOT derive this from the embedder; it must
-                # match the model's output dim or Qdrant rejects the vectors.
-                "embedding_model_dims": cfg.embedder_dims,
-            },
-        },
+        "vector_store": _vector_store_config(cfg),
         "embedder": {"provider": cfg.embedder_provider, "config": _embedder_config(cfg)},
-        "llm": {
-            "provider": cfg.llm_provider,
-            "config": {
-                "model": cfg.llm_model,
-                "openai_base_url": cfg.llm_base_url,
-                "api_key": cfg.llm_api_key,
-                "temperature": cfg.llm_temperature,
-                "top_p": cfg.llm_top_p,
-                "max_tokens": cfg.llm_max_tokens,
-            },
-        },
+        "llm": _llm_config(cfg),
     }
 
 
@@ -245,12 +285,12 @@ def build_store(cfg: Config) -> LessonStore:
         _check_embedder_reachable(cfg)
 
     _log.info(
-        "building mem0 store (host=%s:%s, collection=%s, infer=%s)",
-        cfg.qdrant_host, cfg.qdrant_port, cfg.collection, cfg.infer,
+        "building mem0 store (rag_backend=%s, collection=%s, llm_backend=%s, infer=on)",
+        cfg.rag_backend, cfg.collection, cfg.llm_backend,
     )
     return Mem0LessonStore(
         Memory.from_config(_mem0_config(cfg)),
         user=cfg.mem_user,
         list_limit=cfg.lesson_list_limit,
-        infer=cfg.infer,
+        infer=True,   # infer is ALWAYS on — the lesson is rewritten by the LLM on write
     )

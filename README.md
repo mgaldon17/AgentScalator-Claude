@@ -210,13 +210,17 @@ support-engineer/
 ### Quick start
 
 ```bash
-docker compose up -d        # 1. start Qdrant (the lesson store) on :6333
-pip install -e .            # 2. install agentmem (mem0 + qdrant-client + mcp + httpx + ruamel.yaml)
-# 3. open the repo in Claude Code — the `memory` MCP server + hooks load automatically
+python -m venv .venv && source .venv/bin/activate   # 1. isolated env (Windows: .venv\Scripts\activate)
+pip install -r requirements.txt                     # 2. pinned deps (share this + the repo with your team)
+pip install -e .                                    # 3. install the agentmem package (editable)
+docker compose up -d                                # 4. start Qdrant on :6333 (for rag.backend: qdrant)
+# 5. open the repo in Claude Code — the `memory` MCP server + hooks load automatically
 ```
 
 The embedder runs **locally, in-process** (sentence-transformers, multilingual MiniLM) —
-no API key, fully offline after the one-time model download.
+no API key, fully offline after the one-time model download. Two config switches
+(`config.yaml`) pick the rest: `llm.backend` (`claude` | `local`) and `rag.backend`
+(`qdrant` | `ai_search`).
 
 ### MCP servers
 
@@ -263,9 +267,10 @@ Each `section.key` maps to a flat env name via `config._FIELD_MAP` (e.g.
 with that env var. Point at another file with `AGENTMEM_CONFIG=/path/to/file`.
 
 **Secrets live in `.env`, not in `config.yaml`.** API keys sit in a gitignored
-[`.env`](./.env.example) (KEY=VALUE) and the YAML references them as `${EMBEDDER_API_KEY}`
-/ `${LLM_API_KEY}`; the loader reads `.env` first and expands those placeholders. Copy
-`.env.example` ⟶ `.env` and fill in real keys (override the file with
+[`.env`](./.env.example) (KEY=VALUE): `ANTHROPIC_API_KEY` for `llm.backend: claude`, or
+`LLM_API_KEY` for `llm.backend: local` (LM Studio). The Azure AI Search backend
+(`rag.backend: ai_search`) is **keyless** — Entra ID via `az login` / managed identity, no
+key. Copy `.env.example` ⟶ `.env` and fill in what your switches need (relocate with
 `AGENTMEM_DOTENV=/path/to/.env`).
 
 #### Full `config.yaml` reference
@@ -282,13 +287,12 @@ with that env var. Point at another file with `AGENTMEM_CONFIG=/path/to/file`.
 | `embedder.api_key` | `EMBEDDER_API_KEY` | `${EMBEDDER_API_KEY}` → `.env` | Key for OpenAI-compatible embedders; empty for local. |
 | `embedder.dims` | `EMBEDDER_DIMS` | `384` | Vector dimension — **must** match the model (changing it needs a fresh collection). |
 | `embedder.check_reachable` | `EMBEDDER_CHECK_REACHABLE` | `true` | Preflight a remote embedder (ollama/openai/lmstudio) before building the store — for ollama, also that the model is pulled — so a down embedder fails loudly instead of writing empty vectors. No-op for local providers. |
-| `llm.infer` | `INFER` | `false` | `true` ⟶ mem0's LLM rewrites/reconciles a lesson on write; `false` ⟶ stored verbatim, LLM never called. |
-| `llm.provider` | `LLM_PROVIDER` | `openai` | LLM provider (OpenAI-compatible). |
-| `llm.model` | `LLM_MODEL` | `qwen2.5-7b-instruct-1m` | LLM model (only used when `infer: true`). |
-| `llm.base_url` | `LLM_BASE_URL` | `http://localhost:1234/v1` | LLM endpoint (default = local LM Studio). |
-| `llm.api_key` | `LLM_API_KEY` | `${LLM_API_KEY}` → `.env` | LLM key (only used when `infer: true`). |
-| `llm.temperature` | `LLM_TEMPERATURE` | `0.1` | Sampling temperature — **only** the `infer: true` write path; never affects search. |
-| `llm.top_p` | `LLM_TOP_P` | `1.0` | Nucleus sampling — same scope as `temperature`. |
+| `llm.backend` | `LLM_BACKEND` | `claude` | Who does the always-on lesson infer/rewrite: `claude` (Anthropic API) or `local` (OpenAI-compatible, e.g. qwen/LM Studio). infer is always on — not configurable. |
+| `llm.claude_model` | `LLM_CLAUDE_MODEL` | `claude-sonnet-5` | Claude model for `backend: claude` (key from `ANTHROPIC_API_KEY`). |
+| `llm.local_model` | `LLM_LOCAL_MODEL` | `qwen2.5-7b-instruct-1m` | Model for `backend: local`. |
+| `llm.local_base_url` | `LLM_LOCAL_BASE_URL` | `http://localhost:1234/v1` | Endpoint for `backend: local` (key from `LLM_API_KEY`). |
+| `llm.temperature` | `LLM_TEMPERATURE` | `0.1` | Sampling temperature for the infer/rewrite; never affects search. |
+| `llm.top_p` | `LLM_TOP_P` | `1.0` | Nucleus sampling (dropped for `claude`, which rejects it with temperature). |
 | `llm.max_tokens` | `LLM_MAX_TOKENS` | `2000` | Max tokens for the write-time rewrite. |
 | `guardrails.url_enabled` | `GUARD_URL_ENABLED` | `true` | Master switch for the URL guard. |
 | `guardrails.destructive_enabled` | `GUARD_DESTRUCTIVE_ENABLED` | `true` | Master switch for the destructive-command guard. |
@@ -300,6 +304,30 @@ with that env var. Point at another file with `AGENTMEM_CONFIG=/path/to/file`.
 | `guardrails.probe_user_agent` | `PROBE_USER_AGENT` | `Mozilla/5.0 (agentmem url-guardrail)` | User-Agent for the probe. |
 | `retrieval.search_limit` | `LESSON_SEARCH_LIMIT` | `8` | Default `top_k` for semantic recall. |
 | `retrieval.list_limit` | `LESSON_LIST_LIMIT` | `1000` | `top_k` cap when enumerating all lessons. |
+| `rag.backend` | `RAG_BACKEND` | `qdrant` | Where lessons + docs live: `qdrant` (local, offline) or `ai_search` (Azure AI Search). |
+| `rag.top_k` | `RAG_TOP_K` | `5` | Default chunks `rag_search` returns. |
+| `rag.qdrant_collection` | `RAG_QDRANT_COLLECTION` | `support_docs` | qdrant backend: documents collection (separate from lessons). |
+| `azure_search.service` | `AZURE_SEARCH_SERVICE` | `""` | Azure AI Search **service name** (→ `https://<service>.search.windows.net`); keyless RBAC. Empty = inert. |
+| `azure_search.lessons_index` | `AZURE_SEARCH_LESSONS_INDEX` | `agentmem-lessons` | Lessons index — written directly by mem0. |
+| `azure_search.docs_index` | `AZURE_SEARCH_DOCS_INDEX` | `support-docs` | Documents index — loaded by a human via the portal from a blob. |
+| `azure_search.vector_field` | `AZURE_SEARCH_VECTOR_FIELD` | `text_vector` | Docs vector column (the portal wizard's default). |
+
+#### RAG / storage backend
+
+Two independent switches decide where things run:
+
+- **`llm.backend`** — who performs the always-on lesson infer/rewrite (the chat/agent is
+  *always* Claude Code; this is only the internal rewrite step): `claude` (Anthropic API,
+  same Claude family, key from `ANTHROPIC_API_KEY`) or `local` (an OpenAI-compatible LLM
+  like qwen via LM Studio).
+- **`rag.backend`** — where lessons *and* the document knowledge (`rag_search`) live:
+  - **`qdrant`** (default): local Qdrant, fully offline. Lessons in the mem0 collection;
+    documents in `rag.qdrant_collection`, loaded with `mcp__memory__rag_ingest(text,
+    source)`.
+  - **`ai_search`**: Azure AI Search (**keyless**, Entra ID — `az login`). Lessons are
+    written directly by mem0 to `lessons_index`; documents are loaded by a human via the
+    Azure Portal ("Import and vectorize data" from a **blob**, integrated vectorization) into
+    `docs_index`, and read via `rag_search`.
 
 ### Control panel
 
@@ -532,13 +560,17 @@ support-engineer/
 ### Arranque rápido
 
 ```bash
-docker compose up -d        # 1. arranca Qdrant (la memoria) en :6333
-pip install -e .            # 2. instala agentmem (mem0 + qdrant-client + mcp + httpx + ruamel.yaml)
-# 3. abre el repo en Claude Code — el servidor MCP `memory` + los hooks cargan solos
+python -m venv .venv && source .venv/bin/activate   # 1. entorno aislado (Windows: .venv\Scripts\activate)
+pip install -r requirements.txt                     # 2. deps pinneadas (comparte esto + el repo con tu equipo)
+pip install -e .                                    # 3. instala el paquete agentmem (editable)
+docker compose up -d                                # 4. arranca Qdrant en :6333 (para rag.backend: qdrant)
+# 5. abre el repo en Claude Code — el servidor MCP `memory` + los hooks cargan solos
 ```
 
 El embedder corre **localmente, en el proceso** (sentence-transformers, MiniLM
-multilingüe) — sin API key, totalmente offline tras la descarga única del modelo.
+multilingüe) — sin API key, totalmente offline tras la descarga única del modelo. Dos
+switches en `config.yaml` eligen el resto: `llm.backend` (`claude` | `local`) y
+`rag.backend` (`qdrant` | `ai_search`).
 
 ### Servidores MCP
 
@@ -587,9 +619,10 @@ Cada `section.key` mapea a un nombre de env plano vía `config._FIELD_MAP` (p. e
 despliegue con esa env var. Apunta a otro fichero con `AGENTMEM_CONFIG=/ruta/al/fichero`.
 
 **Los secretos viven en `.env`, no en `config.yaml`.** Las API keys están en un `.env`
-gitignored (KEY=VALUE) y el YAML las referencia como `${EMBEDDER_API_KEY}` /
-`${LLM_API_KEY}`; el loader lee primero el `.env` y expande esos placeholders. Copia
-`.env.example` ⟶ `.env` y pon las keys reales (cambia el fichero con
+gitignored (KEY=VALUE): `ANTHROPIC_API_KEY` para `llm.backend: claude`, o `LLM_API_KEY`
+para `llm.backend: local` (LM Studio). El backend Azure AI Search (`rag.backend:
+ai_search`) es **sin clave** — Entra ID vía `az login` / managed identity. Copia
+`.env.example` ⟶ `.env` y pon lo que tus switches necesiten (reubica con
 `AGENTMEM_DOTENV=/ruta/al/.env`).
 
 #### Referencia completa de `config.yaml`
@@ -606,13 +639,12 @@ gitignored (KEY=VALUE) y el YAML las referencia como `${EMBEDDER_API_KEY}` /
 | `embedder.api_key` | `EMBEDDER_API_KEY` | `${EMBEDDER_API_KEY}` → `.env` | Key para embedders OpenAI-compatibles; vacía en local. |
 | `embedder.dims` | `EMBEDDER_DIMS` | `384` | Dimensión del vector — **debe** coincidir con el modelo (cambiarla exige colección nueva). |
 | `embedder.check_reachable` | `EMBEDDER_CHECK_REACHABLE` | `true` | Preflight de un embedder remoto (ollama/openai/lmstudio) antes de construir el store — para ollama, también que el modelo esté pulled — para que un embedder caído falle ruidosamente en vez de escribir vectores vacíos. No-op en local. |
-| `llm.infer` | `INFER` | `false` | `true` ⟶ el LLM de mem0 reescribe/reconcilia la lección al guardar; `false` ⟶ verbatim, LLM nunca llamado. |
-| `llm.provider` | `LLM_PROVIDER` | `openai` | Provider del LLM (OpenAI-compatible). |
-| `llm.model` | `LLM_MODEL` | `qwen2.5-7b-instruct-1m` | Modelo del LLM (solo con `infer: true`). |
-| `llm.base_url` | `LLM_BASE_URL` | `http://localhost:1234/v1` | Endpoint del LLM (default = LM Studio local). |
-| `llm.api_key` | `LLM_API_KEY` | `${LLM_API_KEY}` → `.env` | Key del LLM (solo con `infer: true`). |
-| `llm.temperature` | `LLM_TEMPERATURE` | `0.1` | Temperatura — **solo** la ruta de escritura `infer: true`; nunca afecta la búsqueda. |
-| `llm.top_p` | `LLM_TOP_P` | `1.0` | Nucleus sampling — mismo ámbito que `temperature`. |
+| `llm.backend` | `LLM_BACKEND` | `claude` | Quién hace la infer/reescritura (siempre activa, no configurable): `claude` (API de Anthropic) o `local` (OpenAI-compatible, p. ej. qwen/LM Studio). |
+| `llm.claude_model` | `LLM_CLAUDE_MODEL` | `claude-sonnet-5` | Modelo Claude para `backend: claude` (key de `ANTHROPIC_API_KEY`). |
+| `llm.local_model` | `LLM_LOCAL_MODEL` | `qwen2.5-7b-instruct-1m` | Modelo para `backend: local`. |
+| `llm.local_base_url` | `LLM_LOCAL_BASE_URL` | `http://localhost:1234/v1` | Endpoint para `backend: local` (key de `LLM_API_KEY`). |
+| `llm.temperature` | `LLM_TEMPERATURE` | `0.1` | Temperatura de la infer/reescritura; nunca afecta la búsqueda. |
+| `llm.top_p` | `LLM_TOP_P` | `1.0` | Nucleus sampling (se descarta en `claude`, que lo rechaza junto a temperature). |
 | `llm.max_tokens` | `LLM_MAX_TOKENS` | `2000` | Máx. tokens de la reescritura al guardar. |
 | `guardrails.url_enabled` | `GUARD_URL_ENABLED` | `true` | Interruptor maestro del guard de URL. |
 | `guardrails.destructive_enabled` | `GUARD_DESTRUCTIVE_ENABLED` | `true` | Interruptor maestro del guard de comandos destructivos. |
@@ -624,6 +656,30 @@ gitignored (KEY=VALUE) y el YAML las referencia como `${EMBEDDER_API_KEY}` /
 | `guardrails.probe_user_agent` | `PROBE_USER_AGENT` | `Mozilla/5.0 (agentmem url-guardrail)` | User-Agent del probe. |
 | `retrieval.search_limit` | `LESSON_SEARCH_LIMIT` | `8` | `top_k` por defecto en la recuperación semántica. |
 | `retrieval.list_limit` | `LESSON_LIST_LIMIT` | `1000` | Tope de `top_k` al enumerar todas las lecciones. |
+| `rag.backend` | `RAG_BACKEND` | `qdrant` | Dónde viven lecciones + docs: `qdrant` (local, offline) o `ai_search` (Azure AI Search). |
+| `rag.top_k` | `RAG_TOP_K` | `5` | Nº de chunks que devuelve `rag_search` por defecto. |
+| `rag.qdrant_collection` | `RAG_QDRANT_COLLECTION` | `support_docs` | Backend qdrant: colección de documentos (aparte de las lecciones). |
+| `azure_search.service` | `AZURE_SEARCH_SERVICE` | `""` | **Nombre del servicio** Azure AI Search (→ `https://<service>.search.windows.net`); RBAC sin clave. Vacío = inerte. |
+| `azure_search.lessons_index` | `AZURE_SEARCH_LESSONS_INDEX` | `agentmem-lessons` | Índice de lecciones — escrito directamente por mem0. |
+| `azure_search.docs_index` | `AZURE_SEARCH_DOCS_INDEX` | `support-docs` | Índice de documentos — cargado por un humano vía el portal desde un blob. |
+| `azure_search.vector_field` | `AZURE_SEARCH_VECTOR_FIELD` | `text_vector` | Columna vectorial de docs (default del asistente del portal). |
+
+#### RAG / backend de almacenamiento
+
+Dos switches independientes deciden dónde corre todo:
+
+- **`llm.backend`** — quién hace la infer/reescritura siempre activa (el chat/agente es
+  *siempre* Claude Code; esto es solo el paso interno de reescritura): `claude` (API de
+  Anthropic, misma familia Claude, key de `ANTHROPIC_API_KEY`) o `local` (un LLM
+  OpenAI-compatible como qwen vía LM Studio).
+- **`rag.backend`** — dónde viven las lecciones *y* el conocimiento documental (`rag_search`):
+  - **`qdrant`** (default): Qdrant local, totalmente offline. Lecciones en la colección
+    mem0; documentos en `rag.qdrant_collection`, cargados con `mcp__memory__rag_ingest(text,
+    source)`.
+  - **`ai_search`**: Azure AI Search (**sin clave**, Entra ID — `az login`). Las lecciones
+    las escribe mem0 directamente en `lessons_index`; los documentos los carga un humano vía
+    el Azure Portal ("Import and vectorize data" desde un **blob**, vectorización integrada)
+    en `docs_index`, y se leen vía `rag_search`.
 
 ### Panel de control
 

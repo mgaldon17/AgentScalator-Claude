@@ -36,18 +36,19 @@ embedder:
   # huggingface/fastembed providers.
   check_reachable: true
 
-# --- LLM ---
-# With infer: false (default) mem0 builds this LLM but NEVER calls it — add() stores the
-# lesson verbatim (embedder only) and search() is pure vector similarity. Set infer: true
-# to let mem0 use the LLM to extract/reconcile facts on WRITE (it rewrites what gets
-# stored). temperature/top_p/max_tokens apply ONLY to that infer: true write path; they do
-# NOT affect retrieval, which never invokes an LLM.
+# --- LLM (the ALWAYS-ON infer/rewrite of a lesson before it is stored) ---
+# Every lesson is rewritten/reconciled by an LLM on write — infer is ALWAYS on and is NOT
+# configurable. `backend` picks WHO does it (the chat/agent is always Claude Code; this is
+# only the internal lesson-rewrite step):
+#   claude — the Anthropic API, same Claude family as the agent. Key from ANTHROPIC_API_KEY.
+#   local  — a local OpenAI-compatible LLM (e.g. qwen via LM Studio). Key from LLM_API_KEY.
+# temperature/top_p/max_tokens apply to whichever backend is active (Anthropic ignores
+# top_p when temperature is set); they never affect retrieval.
 llm:
-  infer: true
-  provider: openai
-  model: qwen2.5-7b-instruct-1m
-  base_url: http://localhost:1234/v1
-  api_key: ${LLM_API_KEY}   # from .env
+  backend: claude          # claude | local
+  claude_model: claude-sonnet-5
+  local_model: qwen2.5-7b-instruct-1m
+  local_base_url: http://localhost:1234/v1
   temperature: 0.1
   top_p: 1.0
   max_tokens: 2000
@@ -74,3 +75,26 @@ guardrails:
 retrieval:
   search_limit: 8
   list_limit: 1000
+
+# --- RAG / storage backend — where lessons + document knowledge live ---
+# backend switch (governs BOTH the lessons store and the document RAG):
+#   qdrant    — local Qdrant (offline). Lessons in the mem0 collection; documents in
+#               qdrant_collection, loaded with mcp__memory__rag_ingest.
+#   ai_search — Azure AI Search (keyless). Lessons written directly by mem0 to the lessons
+#               index; documents loaded by a human via the Azure Portal from a blob.
+rag:
+  backend: qdrant         # qdrant | ai_search
+  top_k: 5
+  qdrant_collection: support_docs   # qdrant backend only (documents, separate from lessons)
+
+# --- Azure AI Search (used ONLY when rag.backend: ai_search) ---
+# Auth is KEYLESS (Entra ID / RBAC via DefaultAzureCredential — `az login`); no key here.
+# `service` is the SEARCH SERVICE NAME (→ https://<service>.search.windows.net); empty =>
+# the ai_search backend is inert. lessons_index is written directly by mem0; docs_index is
+# the PDF/Word index a human loads via the portal from a blob (integrated vectorization on
+# vector_field, the wizard's default column).
+azure_search:
+  service: ""
+  lessons_index: agentmem-lessons
+  docs_index: support-docs
+  vector_field: text_vector

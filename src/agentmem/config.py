@@ -24,7 +24,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
-from .constants import EmbedderProvider, LlmProvider
+from .constants import EmbedderProvider, LlmBackend, RagBackend
 
 # config.py is at <repo>/src/agentmem/config.py → the repo root is three levels up.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -55,12 +55,11 @@ _FIELD_MAP: dict[str, tuple[str, str]] = {
     "EMBEDDER_API_KEY": ("embedder", "api_key"),
     "EMBEDDER_DIMS": ("embedder", "dims"),
     "EMBEDDER_CHECK_REACHABLE": ("embedder", "check_reachable"),
-    # llm (only exercised when infer is true; see store.build_store)
-    "INFER": ("llm", "infer"),
-    "LLM_PROVIDER": ("llm", "provider"),
-    "LLM_MODEL": ("llm", "model"),
-    "LLM_BASE_URL": ("llm", "base_url"),
-    "LLM_API_KEY": ("llm", "api_key"),
+    # llm — infer is ALWAYS on (not configurable); backend picks WHO rewrites the lesson.
+    "LLM_BACKEND": ("llm", "backend"),
+    "LLM_CLAUDE_MODEL": ("llm", "claude_model"),
+    "LLM_LOCAL_MODEL": ("llm", "local_model"),
+    "LLM_LOCAL_BASE_URL": ("llm", "local_base_url"),
     "LLM_TEMPERATURE": ("llm", "temperature"),
     "LLM_TOP_P": ("llm", "top_p"),
     "LLM_MAX_TOKENS": ("llm", "max_tokens"),
@@ -76,6 +75,18 @@ _FIELD_MAP: dict[str, tuple[str, str]] = {
     # retrieval
     "LESSON_SEARCH_LIMIT": ("retrieval", "search_limit"),
     "LESSON_LIST_LIMIT": ("retrieval", "list_limit"),
+    # rag — where lessons + document knowledge live: qdrant (local) / ai_search (Azure).
+    "RAG_BACKEND": ("rag", "backend"),
+    "RAG_TOP_K": ("rag", "top_k"),
+    "RAG_QDRANT_COLLECTION": ("rag", "qdrant_collection"),
+    # azure ai search — used only when rag.backend: ai_search. Keyless (Entra ID). service
+    # is the SEARCH SERVICE NAME (→ https://<service>.search.windows.net). lessons_index is
+    # mem0-managed (written directly, keyless); docs_index is the PDF/Word index a human
+    # loads via the Azure Portal from a blob (integrated vectorization on vector_field).
+    "AZURE_SEARCH_SERVICE": ("azure_search", "service"),
+    "AZURE_SEARCH_LESSONS_INDEX": ("azure_search", "lessons_index"),
+    "AZURE_SEARCH_DOCS_INDEX": ("azure_search", "docs_index"),
+    "AZURE_SEARCH_VECTOR_FIELD": ("azure_search", "vector_field"),
 }
 
 _yaml = YAML()  # round-trip loader (preserves types; comments matter only on write)
@@ -182,18 +193,20 @@ class Config:
     # No-op for the local in-process providers (huggingface / fastembed).
     embedder_check_reachable: bool = True
 
-    # --- LLM ---
-    # mem0 constructs an LLM object even when we never infer. With infer=False (default)
-    # it is built but NEVER called: add() stores the lesson verbatim (embedder only) and
-    # search() is pure vector similarity. Set infer=true to let mem0 use the LLM below to
-    # extract/reconcile facts on write (changes what gets stored — see store.add). The
-    # sampling params only take effect in that infer=true write path; they do NOT affect
-    # retrieval, which never invokes an LLM.
-    infer: bool = False
-    llm_provider: str = LlmProvider.OPENAI
-    llm_model: str = "qwen2.5-7b-instruct-1m"
-    llm_base_url: str = "http://localhost:1234/v1"
-    llm_api_key: str = "lm-studio"
+    # --- LLM (llm.* in config.yaml) — the ALWAYS-ON infer/rewrite of a lesson ---
+    # Every lesson is rewritten/reconciled by an LLM before it is stored (infer is always
+    # on — NOT configurable). ``llm_backend`` picks WHO does it:
+    #   * "claude" — the Anthropic API (same Claude family as the agent). mem0 provider
+    #                "anthropic"; the key comes from the ANTHROPIC_API_KEY env var.
+    #   * "local"  — a local OpenAI-compatible LLM (e.g. qwen via LM Studio). mem0 provider
+    #                "openai" at ``llm_local_base_url``; key from LLM_API_KEY (LM Studio
+    #                accepts any placeholder).
+    # The sampling params apply to whichever backend is active (Anthropic ignores top_p
+    # when temperature is set). See store._llm_config.
+    llm_backend: str = LlmBackend.CLAUDE
+    llm_claude_model: str = "claude-sonnet-5"
+    llm_local_model: str = "qwen2.5-7b-instruct-1m"
+    llm_local_base_url: str = "http://localhost:1234/v1"
     llm_temperature: float = 0.1
     llm_top_p: float = 1.0
     llm_max_tokens: int = 2000
@@ -218,6 +231,28 @@ class Config:
     lesson_search_limit: int = 8       # default top_k for semantic recall
     lesson_list_limit: int = 1000      # top_k cap when enumerating all lessons
 
+    # --- RAG / storage backend (rag.* in config.yaml) ---
+    # Where BOTH the lessons and the document knowledge live. rag_backend switches it:
+    #   * "qdrant"    — local Qdrant (offline). Lessons in the mem0 collection; documents in
+    #                   rag_qdrant_collection, filled via mcp__memory__rag_ingest.
+    #   * "ai_search" — Azure AI Search (keyless). Lessons written directly by mem0 to the
+    #                   lessons index; documents loaded by a human via the Azure Portal from
+    #                   a blob (integrated vectorization) into the docs index.
+    rag_backend: str = RagBackend.QDRANT           # "qdrant" | "ai_search"
+    rag_top_k: int = 5                             # default chunks rag_search returns
+    rag_qdrant_collection: str = "support_docs"    # qdrant backend: docs collection (not lessons)
+
+    # --- Azure AI Search (azure_search.* in config.yaml) — used only when rag.backend: ai_search ---
+    # Auth is KEYLESS (Entra ID / RBAC via DefaultAzureCredential) — no key anywhere. service
+    # is the SEARCH SERVICE NAME (→ https://<service>.search.windows.net). Empty => the
+    # ai_search backend is inert. lessons_index is mem0-managed (written directly);
+    # docs_index is the PDF/Word index a human loads via the portal from a blob, embedded
+    # server-side on vector_field (the portal wizard's default column).
+    azure_search_service: str = ""
+    azure_search_lessons_index: str = "agentmem-lessons"
+    azure_search_docs_index: str = "support-docs"
+    azure_search_vector_field: str = "text_vector"
+
     @classmethod
     def from_env(cls) -> "Config":
         return cls(
@@ -231,11 +266,10 @@ class Config:
             embedder_api_key=os.environ.get("EMBEDDER_API_KEY", cls.embedder_api_key),
             embedder_dims=int(os.environ.get("EMBEDDER_DIMS", cls.embedder_dims)),
             embedder_check_reachable=_env_bool("EMBEDDER_CHECK_REACHABLE", cls.embedder_check_reachable),
-            infer=_env_bool("INFER", cls.infer),
-            llm_provider=os.environ.get("LLM_PROVIDER", cls.llm_provider),
-            llm_model=os.environ.get("LLM_MODEL", cls.llm_model),
-            llm_base_url=os.environ.get("LLM_BASE_URL", cls.llm_base_url),
-            llm_api_key=os.environ.get("LLM_API_KEY", cls.llm_api_key),
+            llm_backend=os.environ.get("LLM_BACKEND", cls.llm_backend),
+            llm_claude_model=os.environ.get("LLM_CLAUDE_MODEL", cls.llm_claude_model),
+            llm_local_model=os.environ.get("LLM_LOCAL_MODEL", cls.llm_local_model),
+            llm_local_base_url=os.environ.get("LLM_LOCAL_BASE_URL", cls.llm_local_base_url),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", cls.llm_temperature)),
             llm_top_p=float(os.environ.get("LLM_TOP_P", cls.llm_top_p)),
             llm_max_tokens=int(os.environ.get("LLM_MAX_TOKENS", cls.llm_max_tokens)),
@@ -249,6 +283,13 @@ class Config:
             probe_user_agent=os.environ.get("PROBE_USER_AGENT", cls.probe_user_agent),
             lesson_search_limit=int(os.environ.get("LESSON_SEARCH_LIMIT", cls.lesson_search_limit)),
             lesson_list_limit=int(os.environ.get("LESSON_LIST_LIMIT", cls.lesson_list_limit)),
+            rag_backend=os.environ.get("RAG_BACKEND", cls.rag_backend),
+            rag_top_k=int(os.environ.get("RAG_TOP_K", cls.rag_top_k)),
+            rag_qdrant_collection=os.environ.get("RAG_QDRANT_COLLECTION", cls.rag_qdrant_collection),
+            azure_search_service=os.environ.get("AZURE_SEARCH_SERVICE", cls.azure_search_service),
+            azure_search_lessons_index=os.environ.get("AZURE_SEARCH_LESSONS_INDEX", cls.azure_search_lessons_index),
+            azure_search_docs_index=os.environ.get("AZURE_SEARCH_DOCS_INDEX", cls.azure_search_docs_index),
+            azure_search_vector_field=os.environ.get("AZURE_SEARCH_VECTOR_FIELD", cls.azure_search_vector_field),
         )
 
 
